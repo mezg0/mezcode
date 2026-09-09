@@ -25,6 +25,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
+import { SessionStore } from "../auth/SessionStore.ts";
 import { GitManager, type GitBranchPullRequest } from "../git/GitManager.ts";
 import {
   PullRequestService,
@@ -152,6 +153,7 @@ function makeBranchPullRequest(
 }
 
 interface HarnessOptions {
+  readonly connected?: boolean;
   readonly snapshot: OrchestrationShellSnapshot;
   readonly settings?: ServerSettings;
   readonly branchPullRequest?: GitManager["Service"]["branchPullRequest"];
@@ -237,6 +239,11 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   });
 
   const dependencies = Layer.mergeAll(
+    Layer.mock(SessionStore)({
+      cookieName: "test",
+      legacyCookieName: undefined,
+      hasConnectedClients: Effect.succeed(options.connected ?? true),
+    }),
     Layer.mock(ProjectionSnapshotQuery)({
       getShellSnapshot: () =>
         Ref.updateAndGet(snapshotReadCount, (count) => count + 1).pipe(
@@ -302,6 +309,37 @@ const startHarness = Effect.fn("startThreadSettlementHarness")(function* (
 });
 
 describe("ThreadSettlementReactor", () => {
+  it.effect("keeps inactivity settlement local while disconnected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const fixture = yield* makeHarness({
+          connected: false,
+          snapshot: makeSnapshot([
+            makeThread("old", { latestUserMessageAt: "2026-08-01T00:00:00.000Z", branch: "old" }),
+            makeThread("recent", { latestUserMessageAt: NOW, branch: "recent" }),
+          ]),
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            sidebarAutoSettleAfterDays: 7,
+            sidebarAutoSettleOnMerge: true,
+          },
+          branchPullRequest: () => Effect.die("idle server must not read GitHub"),
+          pullRequestSummary: () => Effect.die("idle server must not read GitHub"),
+        });
+        yield* Effect.gen(function* () {
+          const reactor = yield* ThreadSettlementReactor.ThreadSettlementReactor;
+          yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
+          assert.deepEqual(
+            (yield* Ref.get(fixture.commands)).map((command) => command.threadId),
+            ["old"],
+          );
+          assert.deepEqual(yield* Ref.get(fixture.branchCalls), []);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
   it.effect(
     "settles all-terminal links from snapshots and keeps open or unsynced links active",
     () =>
