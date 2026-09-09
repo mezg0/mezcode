@@ -52,6 +52,16 @@ The last rule whose key and condition both match wins, even if it belongs to a
 different command. Put a more specific rule after a general one when they share
 a shortcut.
 
+For example, these rules open a new terminal when the terminal has focus and
+toggle the terminal everywhere else:
+
+```json
+[
+  { "key": "mod+j", "command": "terminal.toggle" },
+  { "key": "mod+j", "command": "terminal.new", "when": "terminalFocus" }
+]
+```
+
 ## Commands with special behavior
 
 `chat.new` may ask you to choose a project when there is more than one.
