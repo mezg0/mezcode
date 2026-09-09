@@ -32,7 +32,8 @@ Project scripts use `script.{id}.run`, such as `script.test.run`.
 
 Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`.
 `mod` means Command on macOS and Control elsewhere. Other modifiers are
-`cmd` / `meta`, `ctrl` / `control`, `alt` / `option`, and `shift`.
+`cmd` and `meta`, `ctrl` and `control`, and `alt` and `option`. Each pair is
+equivalent. Use `shift` for the Shift key.
 
 ## When conditions
 
