@@ -396,6 +396,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(
         Layer.succeed(ThreadPullRequestReactor.ThreadPullRequestReactor, {
           start: () => Effect.void,
+          refresh: () => Effect.void,
           drain: Effect.void,
         }),
       ),

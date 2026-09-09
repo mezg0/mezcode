@@ -402,6 +402,7 @@ export class SessionStore extends Context.Service<
       sessionId: AuthSessionId,
     ) => Effect.Effect<number, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
+    readonly hasConnectedClients: Effect.Effect<boolean>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly recordClientConnection: (
       sessionId: AuthSessionId,
@@ -976,6 +977,9 @@ export const make = Effect.gen(function* () {
     revoke,
     revokeAllExcept,
     markConnected,
+    hasConnectedClients: Ref.get(connectedSessionsRef).pipe(
+      Effect.map((sessions) => sessions.size > 0),
+    ),
     markDisconnected,
     recordClientConnection,
   });

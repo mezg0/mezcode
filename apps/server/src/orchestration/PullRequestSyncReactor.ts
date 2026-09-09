@@ -25,6 +25,8 @@ import type * as Scope from "effect/Scope";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
+import { SessionStore } from "../auth/SessionStore.ts";
+import { ThreadPullRequestReactor } from "./ThreadPullRequestReactor.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 
@@ -127,6 +129,8 @@ export const make = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
+  const sessions = yield* SessionStore;
+  const discovery = yield* ThreadPullRequestReactor;
 
   const lastSyncedAt = new Map<string, number>();
   const requested = new Map<string, number>();
@@ -149,7 +153,11 @@ export const make = Effect.gen(function* () {
     <E>(cause: Cause.Cause<E>): Effect.Effect<void, E> =>
       Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.logWarning(message, fields);
 
-  const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* () {
+  const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* (background: boolean) {
+    if (background) {
+      if (!(yield* sessions.hasConnectedClients)) return;
+      yield* discovery.refresh();
+    }
     const snapshot = yield* snapshots.getShellSnapshot();
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
@@ -292,7 +300,7 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       groups,
       ([key, entries]) =>
-        isDue(key, entries, nowMs)
+        (background ? isDue(key, entries, nowMs) : requested.has(key))
           ? syncGroup(key, entries).pipe(
               Effect.catchCause(logSkipped("pull request sync skipped", { key })),
             )
@@ -301,8 +309,8 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const worker = yield* makeDrainableWorker(() =>
-    sweep().pipe(Effect.catchCause(logSkipped("pull request sync sweep failed", {}))),
+  const worker = yield* makeDrainableWorker((background: boolean) =>
+    sweep(background).pipe(Effect.catchCause(logSkipped("pull request sync sweep failed", {}))),
   );
 
   const start: PullRequestSyncReactor["Service"]["start"] = Effect.fn(
@@ -310,7 +318,7 @@ export const make = Effect.gen(function* () {
   )(function* () {
     yield* forkParked(
       Effect.gen(function* () {
-        yield* worker.enqueue(undefined);
+        yield* worker.enqueue(true);
         yield* worker.drain;
       }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.asVoid),
     );
@@ -319,7 +327,7 @@ export const make = Effect.gen(function* () {
   const requestSync: PullRequestSyncReactor["Service"]["requestSync"] = (key) =>
     Effect.suspend(() => {
       requested.set(threadPullRequestKeyOf(key), ++requestGeneration);
-      return worker.enqueue(undefined);
+      return worker.enqueue(false);
     });
 
   return { start, drain: worker.drain, requestSync } satisfies PullRequestSyncReactor["Service"];

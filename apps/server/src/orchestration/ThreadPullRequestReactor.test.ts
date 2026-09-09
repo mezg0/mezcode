@@ -224,6 +224,7 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
     const reactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
     yield* reactor.start();
     yield* Deferred.succeed(activation, undefined);
+    yield* reactor.refresh();
     yield* Queue.take(reads);
     yield* reactor.drain;
     return reactor;
@@ -242,7 +243,7 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
 });
 
 describe("ThreadPullRequestReactor", () => {
-  it.effect("discovers saved branch PRs without a client and shares branch lookups", () =>
+  it.effect("discovers saved branch PRs on a coordinated refresh and shares branch lookups", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* makeHarness({
@@ -269,6 +270,7 @@ describe("ThreadPullRequestReactor", () => {
           );
 
           yield* TestClock.adjust("1 minute");
+          yield* reactor.refresh();
           yield* Queue.take(fixture.reads);
           yield* reactor.drain;
           expect(yield* Ref.get(fixture.commands)).toHaveLength(2);
@@ -518,10 +520,12 @@ describe("ThreadPullRequestReactor", () => {
             expect(yield* Ref.get(fixture.commands)).toHaveLength(0);
             yield* Ref.set(online, true);
             yield* TestClock.adjust("1 minute");
+            yield* reactor.refresh();
             yield* Queue.take(fixture.reads);
             yield* reactor.drain;
             expect((yield* Ref.get(fixture.commands))[0]?.threadId).toBe("backfill");
             yield* TestClock.adjust("1 minute");
+            yield* reactor.refresh();
             yield* Queue.take(fixture.reads);
             yield* reactor.drain;
             expect((yield* Ref.get(fixture.branchCalls)).map((call) => call.branch)).toEqual([
@@ -552,6 +556,7 @@ describe("ThreadPullRequestReactor", () => {
             attempt++
           ) {
             yield* TestClock.adjust("1 minute");
+            yield* reactor.refresh();
             yield* Queue.take(fixture.reads);
             yield* reactor.drain;
           }

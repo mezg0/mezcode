@@ -16,7 +16,6 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -32,6 +31,7 @@ export class ThreadPullRequestReactor extends Context.Service<
   {
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
     readonly drain: Effect.Effect<void>;
+    readonly refresh: () => Effect.Effect<void>;
   }
 >()("t3/orchestration/ThreadPullRequestReactor") {}
 
@@ -350,21 +350,16 @@ export const make = Effect.gen(function* () {
   const start = Effect.fn("ThreadPullRequestReactor.start")(function* () {
     const events = yield* engine.subscribeDomainEvents;
     yield* forkParked(Stream.runForEach(events, processEvent));
-    // Run without client demand. Saved branch lookups share GitManager's
-    // provider cache and retry backoff with status and automatic settlement.
-    yield* forkParked(
-      Effect.gen(function* () {
-        yield* worker.enqueue({ threadId: null, refresh: false, backfill: true });
-        yield* worker.drain;
-        yield* Effect.gen(function* () {
-          yield* worker.enqueue({ threadId: null, refresh: false });
-          yield* worker.drain;
-        }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.delay("1 minute"));
-      }).pipe(Effect.asVoid),
-    );
   });
 
-  return { start, drain: worker.drain } satisfies ThreadPullRequestReactor["Service"];
+  let backfill = true;
+  const refresh = Effect.fn("ThreadPullRequestReactor.refresh")(function* () {
+    yield* worker.enqueue({ threadId: null, refresh: false, backfill });
+    backfill = false;
+    yield* worker.drain;
+  });
+
+  return { start, refresh, drain: worker.drain } satisfies ThreadPullRequestReactor["Service"];
 });
 
 export const layer = Layer.effect(ThreadPullRequestReactor, make);

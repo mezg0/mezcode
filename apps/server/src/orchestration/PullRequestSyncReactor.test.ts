@@ -24,6 +24,8 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import { SessionStore } from "../auth/SessionStore.ts";
+import { ThreadPullRequestReactor } from "./ThreadPullRequestReactor.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import {
   OrchestrationEngineService,
@@ -154,6 +156,7 @@ function makeSummary(
 interface HarnessOptions {
   readonly invalidate?: PullRequestService["Service"]["invalidate"];
   readonly snapshot: OrchestrationShellSnapshot;
+  readonly connected?: boolean;
   readonly summary?: (
     input: PullRequestRef,
   ) => Effect.Effect<PullRequestSummary, PullRequestOperationError>;
@@ -164,6 +167,9 @@ interface HarnessOptions {
 
 const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: HarnessOptions) {
   const activation = yield* Deferred.make<void>();
+  const connected = yield* Ref.make(options.connected ?? true);
+  const demandReads = yield* Queue.unbounded<void>();
+  const discoveryCalls = yield* Ref.make(0);
   const snapshots = yield* Ref.make(options.snapshot);
   const snapshotReads = yield* Queue.unbounded<void>();
   const syncCommands = yield* Ref.make<ReadonlyArray<SyncCommand>>([]);
@@ -200,6 +206,16 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
   };
 
   const dependencies = Layer.mergeAll(
+    Layer.mock(SessionStore)({
+      cookieName: "test-session",
+      legacyCookieName: undefined,
+      hasConnectedClients: Ref.get(connected).pipe(
+        Effect.tap(() => Queue.offer(demandReads, undefined)),
+      ),
+    }),
+    Layer.mock(ThreadPullRequestReactor)({
+      refresh: () => Ref.update(discoveryCalls, (n) => n + 1),
+    }),
     Layer.mock(ProjectionSnapshotQuery)({
       getShellSnapshot: () =>
         Queue.offer(snapshotReads, undefined).pipe(Effect.andThen(Ref.get(snapshots))),
@@ -221,6 +237,9 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
 
   return {
     activation,
+    connected,
+    demandReads,
+    discoveryCalls,
     snapshots,
     snapshotReads,
     syncCommands,
@@ -274,6 +293,71 @@ function applySync(
 }
 
 describe("PullRequestSyncReactor", () => {
+  it.effect("pauses both periodic jobs without clients and resumes after a client connects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeHarness({
+          connected: false,
+          snapshot: makeSnapshot([makeThread("one", { pullRequests: [makeLink(7)] })]),
+        });
+        yield* Effect.gen(function* () {
+          const reactor = yield* PullRequestSyncReactor.PullRequestSyncReactor;
+          yield* reactor.start();
+          yield* Deferred.succeed(fixture.activation, undefined);
+          yield* Queue.take(fixture.demandReads);
+          yield* reactor.drain;
+          yield* TestClock.adjust("1 minute");
+          yield* Queue.take(fixture.demandReads);
+          yield* reactor.drain;
+          assert.deepStrictEqual(yield* Ref.get(fixture.summaryCalls), []);
+          assert.strictEqual(yield* Ref.get(fixture.discoveryCalls), 0);
+          yield* Ref.set(fixture.connected, true);
+          yield* TestClock.adjust("1 minute");
+          yield* Queue.take(fixture.demandReads);
+          yield* Queue.take(fixture.snapshotReads);
+          yield* reactor.drain;
+          assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 1);
+          assert.strictEqual(yield* Ref.get(fixture.discoveryCalls), 1);
+          yield* Ref.set(fixture.connected, false);
+          yield* TestClock.adjust("1 minute");
+          yield* Queue.take(fixture.demandReads);
+          yield* reactor.drain;
+          assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 1);
+          assert.strictEqual(yield* Ref.get(fixture.discoveryCalls), 1);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("refreshes only the requested PR while disconnected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeHarness({
+          connected: false,
+          snapshot: makeSnapshot([makeThread("one", { pullRequests: [makeLink(7), makeLink(8)] })]),
+        });
+        yield* Effect.gen(function* () {
+          const reactor = yield* PullRequestSyncReactor.PullRequestSyncReactor;
+          yield* reactor.start();
+          yield* Deferred.succeed(fixture.activation, undefined);
+          yield* Queue.take(fixture.demandReads);
+          yield* reactor.drain;
+          yield* reactor.requestSync({
+            host: "github.com",
+            repository: "owner/repository",
+            number: 7,
+          });
+          yield* reactor.drain;
+          assert.deepStrictEqual(
+            (yield* Ref.get(fixture.summaryCalls)).map((ref) => ref.number),
+            [7],
+          );
+          assert.strictEqual(yield* Ref.get(fixture.discoveryCalls), 0);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
   it.effect("retries a failed stack read after the summary becomes terminal", () =>
     Effect.scoped(
       Effect.gen(function* () {

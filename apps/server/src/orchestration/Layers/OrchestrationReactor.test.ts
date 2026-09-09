@@ -73,6 +73,7 @@ describe("OrchestrationReactor", () => {
               started.push("thread-pull-request-reactor");
               return Effect.void;
             },
+            refresh: () => Effect.void,
             drain: Effect.void,
           }),
         ),

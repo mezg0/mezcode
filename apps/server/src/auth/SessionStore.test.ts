@@ -399,6 +399,7 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
 
       const beforeConnect = yield* sessions.listActive();
       expect(beforeConnect[0]?.lastConnectedAt).toBeNull();
+      expect(yield* sessions.hasConnectedClients).toBe(false);
 
       yield* TestClock.adjust(Duration.seconds(1));
       yield* sessions.markConnected(issued.sessionId);
@@ -406,6 +407,7 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       const firstConnectedAt = firstConnect[0]?.lastConnectedAt;
 
       expect(firstConnect[0]?.connected).toBe(true);
+      expect(yield* sessions.hasConnectedClients).toBe(true);
       expect(firstConnectedAt).not.toBeNull();
 
       yield* TestClock.adjust(Duration.seconds(1));
@@ -415,7 +417,9 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect(stillConnected[0]?.lastConnectedAt?.toString()).toBe(firstConnectedAt?.toString());
 
       yield* sessions.markDisconnected(issued.sessionId);
+      expect(yield* sessions.hasConnectedClients).toBe(true);
       yield* sessions.markDisconnected(issued.sessionId);
+      expect(yield* sessions.hasConnectedClients).toBe(false);
       const afterDisconnect = yield* sessions.listActive();
 
       expect(afterDisconnect[0]?.connected).toBe(false);
