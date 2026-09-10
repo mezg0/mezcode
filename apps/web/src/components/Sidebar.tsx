@@ -46,11 +46,14 @@ import {
   ChevronDownIcon,
   CircleAlertIcon,
   CircleCheckIcon,
-  CircleDashedIcon,
+  CircleHelpIcon,
+  CircleXIcon,
   ClockIcon,
+  EyeIcon,
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  LoaderCircleIcon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
@@ -340,6 +343,8 @@ function SidebarThreadTooltip({
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
+  const isWorking = resolveSidebarThreadStatus(thread) === "working";
+  const workingStartedAt = isWorking ? resolveWorkingStartedAt(thread) : null;
   return (
     <TooltipPopup
       side="right"
@@ -379,6 +384,14 @@ function SidebarThreadTooltip({
               <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
               <div className="min-w-0 flex-1 wrap-break-word leading-5">
                 You're currently checked out on another branch.
+              </div>
+            </div>
+          ) : null}
+          {workingStartedAt !== null ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <ClockIcon className="size-3 shrink-0 stroke-muted-foreground" />
+              <div className="min-w-0 truncate text-foreground/75">
+                Working for <WorkingDuration startedAt={workingStartedAt} />
               </div>
             </div>
           ) : null}
@@ -1120,55 +1133,55 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const topStatus =
     status === "working"
       ? {
+          kind: "working" as const,
           label: "Working",
-          icon: "working" as const,
-          // No shimmer: a label that animates forever is noise in a sidebar
-          // full of them (and repaints every vsync on high-refresh displays).
-          // Working is a background state, so it rests at the dim end of what
-          // the old pulse cycled through; only the thread you have open gets
-          // the label at full strength.
+          Icon: LoaderCircleIcon,
           className: cn("text-sky-600 dark:text-sky-400", !props.isActive && "opacity-75"),
         }
       : status === "monitoring"
         ? {
-            // Monitoring is calm background presence, not active progress
-            // (monitoring-pill D6), so it keeps the label at full strength.
+            kind: "monitoring" as const,
             label: "Monitoring",
-            icon: null,
+            Icon: EyeIcon,
             className: "text-sky-600 dark:text-sky-400",
           }
         : status === "approval"
           ? {
+              kind: "approval" as const,
               label: "Approval",
-              icon: null,
+              Icon: CircleAlertIcon,
               className: "text-amber-700 dark:text-amber-300",
             }
           : status === "input"
             ? {
+                kind: "input" as const,
                 label: "Input",
-                icon: null,
+                Icon: CircleHelpIcon,
                 className: "text-indigo-600 dark:text-indigo-300",
               }
             : status === "failed"
               ? {
+                  kind: "failed" as const,
                   label: "Failed",
-                  icon: null,
+                  Icon: CircleXIcon,
                   className: "text-red-700 dark:text-red-300",
                 }
               : isWoke
                 ? {
+                    kind: "woke" as const,
                     label: "Woke",
-                    icon: "woke" as const,
+                    Icon: AlarmClockIcon,
                     className: "text-amber-700 dark:text-amber-300",
                   }
                 : isUnread
                   ? {
+                      kind: "done" as const,
                       label: "Done",
-                      icon: "done" as const,
+                      Icon: CircleCheckIcon,
                       className: "text-emerald-700 dark:text-emerald-300",
                     }
                   : null;
-  const isWokeStatus = topStatus?.icon === "woke";
+  const isWokeStatus = topStatus?.kind === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
     effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
@@ -1180,7 +1193,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
 
   const modelInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
   const providerEntry = props.providerEntryByInstanceId.get(modelInstanceId) ?? null;
-  const driverKind = providerEntry?.driverKind ?? null;
   const showInstanceBadge =
     providerEntry !== null &&
     shouldShowInstanceBadge(providerEntry, props.providerEntryByInstanceId.values());
@@ -1730,8 +1742,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
       className={cn(
-        // Matches the h-[4.875rem] content box; the py-0.5 padding is added on top.
-        "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        // Matches the h-[3.75rem] content box plus the py-0.5 row padding.
+        "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_64px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -1752,7 +1764,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             />
           }
         >
-          <div className="relative z-10 h-[4.875rem] px-[var(--sidebar-row-content-inset)] py-[var(--sidebar-content-inset)]">
+          <div className="relative z-10 flex h-[3.75rem] flex-col justify-center px-[var(--sidebar-row-content-inset)] py-[var(--sidebar-content-inset)]">
             <div className="flex h-5 min-w-0 items-center gap-1.5">
               {draftIndicator}
               {props.project ? (
@@ -1761,15 +1773,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               {props.projectDisplayName ? (
                 <span
                   className={cn(
-                    "min-w-0 flex-1 truncate text-secondary-label text-xs",
+                    "min-w-0 truncate text-secondary-label text-xs",
                     shouldRecede ? "font-normal" : "font-medium",
                   )}
                 >
                   {props.projectDisplayName}
                 </span>
-              ) : (
-                <span className="flex-1" />
-              )}
+              ) : null}
+              {thread.worktreePath !== null ? <ThreadWorktreeIndicator thread={thread} /> : null}
+              <span className="flex-1" />
               {pinIndicator}
               {/* The visible state owns this slot's width: status at rest,
                   actions on hover/keyboard focus or while the popover is open. Keeping
@@ -1805,8 +1817,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                                   topStatus.className,
                                 )}
                               >
-                                <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
-                                <span role="status">{topStatus.label}</span>
+                                <topStatus.Icon aria-hidden className="size-4 shrink-0" />
+                                <span role="status" className="sr-only">
+                                  {topStatus.label}
+                                </span>
                               </button>
                             }
                           />
@@ -1819,20 +1833,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                             topStatus.className,
                           )}
                         >
-                          {topStatus.icon === "working" ? (
-                            <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "done" ? (
-                            <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
-                          ) : null}
-                          {/* The label alone is the live region: a role="status"
-                            wrapper around the ticking duration would make
-                            screen readers announce every second. */}
-                          <span role="status">{topStatus.label}</span>
-                          {status === "working" ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                            </span>
-                          ) : null}
+                          <topStatus.Icon
+                            aria-hidden
+                            className={cn(
+                              "size-4 shrink-0",
+                              status === "working" && "animate-spin motion-reduce:animate-none",
+                            )}
+                          />
+                          <span role="status" className="sr-only">
+                            {topStatus.label}
+                          </span>
                         </span>
                       )
                     ) : (
@@ -1899,70 +1909,35 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 </span>
               )}
             </div>
-            <div className="mt-1 flex min-w-0">
+            <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
                 </span>
               ) : null}
-            </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-              {/* Always the branch. The plan step used to take this slot while
-                  working, but it truncated to a half-sentence and dropped the
-                  branch, so the row lost its most stable identifier. */}
-              {thread.branch ? (
-                <>
-                  <ThreadWorktreeIndicator thread={thread} />
-                  <span className="min-w-0 flex-1 truncate whitespace-nowrap text-muted-foreground/40">
-                    {thread.branch}
+              <span className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1 text-secondary-label text-xs">
+                {terminalStatusIcon}
+                {prBadge}
+                {prBadge &&
+                pr &&
+                (supportsMultiplePullRequests
+                  ? visibleThreadPullRequests(thread.pullRequests).length === 0
+                  : thread.linkedPullRequest == null) ? (
+                  <LinkBranchPullRequestButton threadRef={threadRef} url={pr.url} />
+                ) : null}
+                {diff ? (
+                  <span className="shrink-0 font-mono">
+                    <span className="text-diff-addition-foreground">+{diff.insertions}</span>{" "}
+                    <span className="text-diff-deletion-foreground">−{diff.deletions}</span>
                   </span>
-                </>
-              ) : (
-                <span className="flex-1" />
-              )}
-              {terminalStatusIcon}
-              {prBadge}
-              {prBadge &&
-              pr &&
-              (supportsMultiplePullRequests
-                ? visibleThreadPullRequests(thread.pullRequests).length === 0
-                : thread.linkedPullRequest == null) ? (
-                <LinkBranchPullRequestButton threadRef={threadRef} url={pr.url} />
-              ) : null}
-              {diff ? (
-                <span className="shrink-0 font-mono">
-                  <span className="text-diff-addition-foreground">+{diff.insertions}</span>{" "}
-                  <span className="text-diff-deletion-foreground">−{diff.deletions}</span>
-                </span>
-              ) : null}
-              <span
-                aria-hidden
-                className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
-              >
+                ) : null}
                 {isRemote ? (
                   <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
                     <EnvironmentMachineIcon
                       aria-hidden
                       kind={props.environmentMachine}
                       className="size-3.5"
-                    />
-                  </span>
-                ) : null}
-                {driverKind ? (
-                  <span className="inline-flex shrink-0 items-center">
-                    <ProviderInstanceIcon
-                      driverKind={driverKind}
-                      displayName={
-                        providerEntry?.displayName ??
-                        thread.session?.providerName ??
-                        modelInstanceId
-                      }
-                      accentColor={providerEntry?.accentColor}
-                      showBadge={showInstanceBadge}
-                      // Glyph dims, badge stays saturated; offset matches the composer trigger.
-                      iconClassName="size-3.5 opacity-60"
-                      badgeClassName="right-[-0.1875rem] bottom-[-0.1875rem] h-3 min-w-3 px-0.5 text-[7px]"
                     />
                   </span>
                 ) : null}
