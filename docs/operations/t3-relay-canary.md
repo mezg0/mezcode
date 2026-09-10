@@ -2,37 +2,53 @@
 
 ## Edge transport smoke test
 
-Before routing a zone or relinking an environment, deploy the disposable
-`workers.dev` canary. It uses the production Durable Object and forwarding core
-without provisioning DNS, the API Worker, PlanetScale, Clerk, or observability
-resources.
+Before routing a zone or relinking an environment, run the disposable canary.
+It uses the production Durable Object and forwarding core without provisioning
+DNS, the API Worker, PlanetScale, Clerk, or observability resources. The
+canary has no wildcard hostname, so it addresses endpoints by path:
+`/u/<userKey>/e/<endpointKey>/...`.
 
-From `infra/relay`, provide Cloudflare deployment credentials plus fresh,
-random values for these variables:
+From `infra/relay`, provide a fresh random control token:
 
 ```text
-T3_RELAY_CANARY_ENDPOINT_KEY=16-lowercase-hex-characters
-T3_RELAY_CANARY_CONNECTOR_TOKEN=random-secret
-T3_RELAY_CANARY_CONNECTOR_LEASE_ID=random-identifier
 T3_RELAY_CANARY_CONTROL_TOKEN=random-secret
 ```
 
-Deploy with a unique stage and copy its returned URL into
-`T3_RELAY_CANARY_URL`:
+For a local run, no Cloudflare credentials are needed beyond placeholder
+values that satisfy the provider's environment check:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=00000000000000000000000000000000 CLOUDFLARE_API_TOKEN=local \
+  alchemy dev alchemy.edge-canary.run.ts --stage canary-local
+T3_RELAY_CANARY_URL=http://localhost:1337 T3_RELAY_CANARY_FAST=1 \
+  bun scripts/test-edge-canary.mjs
+```
+
+For a deployed run, provide real Cloudflare credentials, deploy with a unique
+stage, and copy its returned URL into `T3_RELAY_CANARY_URL`:
 
 ```sh
 alchemy deploy alchemy.edge-canary.run.ts --stage <unique-stage> --yes
 T3_RELAY_CANARY_URL=https://<worker>.workers.dev bun scripts/test-edge-canary.mjs
 ```
 
-The harness verifies HTTP request bodies, a response larger than the initial
-flow-control window, text and fragmented binary WebSockets, edge-handled Effect
-RPC ping/pong, hibernation and wake with the connector restored, and lease
-revocation. Destroy the exact stage even if validation fails:
+The harness links two users, one with two environments on the same hub object
+and one on its own, and verifies routing, isolation between endpoints and
+between objects, credential scoping, concurrent traffic, HTTP request bodies,
+a response larger than the initial flow-control window, text and fragmented
+binary WebSockets, edge-handled Effect RPC ping/pong, relinking one endpoint
+while a sibling's client stays connected, and revoking one endpoint without
+affecting the other. Without `T3_RELAY_CANARY_FAST` it also covers the slow
+reader, abandoned download, and hibernation checks, which take several
+minutes and only mean something on real Cloudflare infrastructure. Destroy the
+exact stage even if validation fails:
 
 ```sh
 alchemy destroy alchemy.edge-canary.run.ts --stage <unique-stage> --yes
 ```
+
+To attach a real local T3 server instead of the harness origins, use
+`scripts/connect-edge-canary.mjs`; it prints the public URL prefix to open.
 
 The canary control routes are protected by the control token and exist only in
 the disposable canary Worker. They are not part of the production edge Worker.
