@@ -8,6 +8,8 @@
 //
 // Set T3_RELAY_CANARY_FAST=1 to skip the multi-minute idle and hibernation
 // checks, which only mean something against real Cloudflare infrastructure.
+// Set T3_RELAY_CANARY_SHARED_HUB=1 when the Worker runs with
+// RELAY_HUB_SHARD_COUNT=1, so both users are expected on one object.
 import { randomBytes } from "node:crypto";
 
 import { T3RelayConnectorSession } from "../../../apps/server/src/cloud/T3RelayConnector.ts";
@@ -15,6 +17,7 @@ import { T3RelayConnectorSession } from "../../../apps/server/src/cloud/T3RelayC
 const workerUrl = process.env.T3_RELAY_CANARY_URL;
 const controlToken = process.env.T3_RELAY_CANARY_CONTROL_TOKEN;
 const fast = process.env.T3_RELAY_CANARY_FAST === "1";
+const sharedHub = process.env.T3_RELAY_CANARY_SHARED_HUB === "1";
 
 if (!workerUrl || !controlToken) {
   throw new Error("T3_RELAY_CANARY_URL and T3_RELAY_CANARY_CONTROL_TOKEN are required.");
@@ -286,11 +289,16 @@ try {
   const hubB = (await b1.diagnostics()).hub;
   assert(hubA.endpoints[a1.endpointKey]?.connectorConnected, "a1 missing from hub A.");
   assert(hubA.endpoints[a2.endpointKey]?.connectorConnected, "a2 missing from hub A.");
-  assert(hubA.endpoints[b1.endpointKey] === undefined, "b1 leaked into hub A.");
   assert(hubB.endpoints[b1.endpointKey]?.connectorConnected, "b1 missing from hub B.");
-  assert(hubB.endpoints[a1.endpointKey] === undefined, "a1 leaked into hub B.");
-  assert(hubA.configuredEndpointCount === 2, `hub A configured ${hubA.configuredEndpointCount}.`);
-  assert(hubA.activationId !== hubB.activationId, "users A and B share one object.");
+  if (sharedHub) {
+    assert(hubA.activationId === hubB.activationId, "users A and B did not share one object.");
+    assert(hubA.configuredEndpointCount === 3, `hub configured ${hubA.configuredEndpointCount}.`);
+  } else {
+    assert(hubA.endpoints[b1.endpointKey] === undefined, "b1 leaked into hub A.");
+    assert(hubB.endpoints[a1.endpointKey] === undefined, "a1 leaked into hub B.");
+    assert(hubA.configuredEndpointCount === 2, `hub A configured ${hubA.configuredEndpointCount}.`);
+    assert(hubA.activationId !== hubB.activationId, "users A and B share one object.");
+  }
   results.isolation = "passed";
 
   // An unknown endpoint on a live hub is offline, not served by a neighbor.
@@ -452,7 +460,10 @@ try {
   assert(survivor.origin === "a2", "a2 stopped serving after a1 was revoked.");
   const afterRevoke = (await a2.diagnostics()).hub;
   assert(afterRevoke.endpoints[a1.endpointKey] === undefined, "a1 state lingered after revoke.");
-  assert(afterRevoke.configuredEndpointCount === 1, "a1 configuration lingered after revoke.");
+  assert(
+    afterRevoke.configuredEndpointCount === (sharedHub ? 2 : 1),
+    "a1 configuration lingered after revoke.",
+  );
   results.revocation = "passed";
 
   console.log(JSON.stringify(results));
