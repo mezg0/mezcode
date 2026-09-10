@@ -147,6 +147,7 @@ class Endpoint {
 
   restartSession() {
     this.session?.close();
+    this.session = null;
     const connectorUrl = this.publicUrl("/.well-known/t3-relay/connect");
     connectorUrl.protocol = connectorUrl.protocol === "https:" ? "wss:" : "ws:";
     this.session = new T3RelayConnectorSession(
@@ -264,6 +265,10 @@ const endpoints = [a1, a2, b1];
 const results = {};
 
 try {
+  // Hub objects keep storage across runs, so count configured endpoints
+  // relative to what the objects already held.
+  const baselineA = (await a1.diagnostics()).hub.configuredEndpointCount;
+  const baselineB = (await b1.diagnostics()).hub.configuredEndpointCount;
   for (const endpoint of endpoints) await endpoint.configure();
   for (const endpoint of endpoints) await endpoint.connect();
 
@@ -290,13 +295,17 @@ try {
   assert(hubA.endpoints[a1.endpointKey]?.connectorConnected, "a1 missing from hub A.");
   assert(hubA.endpoints[a2.endpointKey]?.connectorConnected, "a2 missing from hub A.");
   assert(hubB.endpoints[b1.endpointKey]?.connectorConnected, "b1 missing from hub B.");
+  const expectedConfiguredA = baselineA + (sharedHub ? 3 : 2);
+  assert(
+    hubA.configuredEndpointCount === expectedConfiguredA,
+    `hub A configured ${hubA.configuredEndpointCount}, expected ${expectedConfiguredA}.`,
+  );
   if (sharedHub) {
     assert(hubA.activationId === hubB.activationId, "users A and B did not share one object.");
-    assert(hubA.configuredEndpointCount === 3, `hub configured ${hubA.configuredEndpointCount}.`);
   } else {
     assert(hubA.endpoints[b1.endpointKey] === undefined, "b1 leaked into hub A.");
     assert(hubB.endpoints[a1.endpointKey] === undefined, "a1 leaked into hub B.");
-    assert(hubA.configuredEndpointCount === 2, `hub A configured ${hubA.configuredEndpointCount}.`);
+    assert(hubB.configuredEndpointCount === baselineB + 1, "hub B configured count drifted.");
     assert(hubA.activationId !== hubB.activationId, "users A and B share one object.");
   }
   results.isolation = "passed";
@@ -403,6 +412,30 @@ try {
   held.socket.close();
   results.relink = "passed";
 
+  // A host that reconnects while its old socket is still open (sleep/wake,
+  // network switch) must end up on a live table: the superseded socket is
+  // closed and traffic flows through the new one.
+  const staleSession = b1.session;
+  const staleDisconnects = b1.lifecycle.filter((event) => event.type === "disconnected").length;
+  b1.session = null;
+  b1.restartSession();
+  await b1.connect();
+  await waitFor(
+    () => b1.lifecycle.filter((event) => event.type === "disconnected").length > staleDisconnects,
+    "Superseded b1 socket was not closed by the hub.",
+  );
+  // Stop the stale session before its reconnect backoff fires.
+  staleSession.close();
+  const reconnected = await echo(b1, "/after-reconnect");
+  assert(reconnected.origin === "b1", "b1 did not serve after a reconnect over a live socket.");
+  const reconnectedWs = await websocketRoundTrip(b1.wsUrl("/ws"), "again");
+  assert(reconnectedWs === "b1:again", "b1 WebSocket failed after reconnect.");
+  assert(
+    (await b1.diagnostics()).endpoint?.connectorConnected,
+    "b1 not connected after reconnect.",
+  );
+  results.reconnect = "passed";
+
   if (!fast) {
     const slowStartedAt = Date.now();
     const slowResponse = await fetch(a1.publicUrl("/drip"));
@@ -461,7 +494,7 @@ try {
   const afterRevoke = (await a2.diagnostics()).hub;
   assert(afterRevoke.endpoints[a1.endpointKey] === undefined, "a1 state lingered after revoke.");
   assert(
-    afterRevoke.configuredEndpointCount === (sharedHub ? 2 : 1),
+    afterRevoke.configuredEndpointCount === expectedConfiguredA - 1,
     "a1 configuration lingered after revoke.",
   );
   results.revocation = "passed";

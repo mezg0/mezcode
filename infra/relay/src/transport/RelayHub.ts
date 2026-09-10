@@ -299,10 +299,13 @@ export default class RelayHub extends Cloudflare.DurableObject<RelayHub>()(
           restoreKeys.add(keys.activeSession);
         }
       }
-      const stored =
-        restoreKeys.size === 0
-          ? new Map<string, unknown>()
-          : yield* state.storage.get<unknown>([...restoreKeys]);
+      // Durable Object storage reads at most 128 keys per call.
+      const stored = new Map<string, unknown>();
+      const restoreKeyList = [...restoreKeys];
+      for (let offset = 0; offset < restoreKeyList.length; offset += 128) {
+        const batch = yield* state.storage.get<unknown>(restoreKeyList.slice(offset, offset + 128));
+        for (const [key, value] of batch) stored.set(key, value);
+      }
       const staleConnectors: Array<Cloudflare.WebSocket> = [];
       for (const { socket, attachment } of attachments) {
         if (attachment?.role === "connector") {
@@ -463,6 +466,16 @@ export default class RelayHub extends Cloudflare.DurableObject<RelayHub>()(
               yield* state.storage.delete(keys.ticket);
               return HttpServerResponse.text("Invalid connector ticket", { status: 401 });
             }
+            // Refuse before consuming the ticket so a host that hits the cap
+            // can retry the same ticket once capacity frees up.
+            if (
+              (endpoints.get(endpointKey)?.connector ?? null) === null &&
+              connectedConnectors() >= RELAY_TRANSPORT_MAX_OBJECT_CONNECTORS
+            ) {
+              return HttpServerResponse.text("Relay object is at connector capacity", {
+                status: 503,
+              });
+            }
             yield* state.storage.delete(keys.ticket);
             const configuration = yield* state.storage.get<StoredConnectorConfiguration>(
               keys.configuration,
@@ -470,14 +483,6 @@ export default class RelayHub extends Cloudflare.DurableObject<RelayHub>()(
             if (configuration === undefined || presentedTicket === undefined) {
               return HttpServerResponse.text("Connector configuration is unavailable", {
                 status: 401,
-              });
-            }
-            if (
-              (endpoints.get(endpointKey)?.connector ?? null) === null &&
-              connectedConnectors() >= RELAY_TRANSPORT_MAX_OBJECT_CONNECTORS
-            ) {
-              return HttpServerResponse.text("Relay object is at connector capacity", {
-                status: 503,
               });
             }
             connectingSession = {
@@ -704,14 +709,13 @@ export default class RelayHub extends Cloudflare.DurableObject<RelayHub>()(
           const upgradeConnector = role === "connector" ? null : endpoint!.connector;
           const [response, socket] = yield* Cloudflare.upgrade();
           if (role === "connector") {
-            const connectorEndpoint = endpointRuntime(endpointKey);
-            if (connectorEndpoint.connector !== null) {
-              yield* disconnectConnector(
-                connectorEndpoint,
-                4000,
-                "Superseded by a newer connector",
-              );
+            const superseded = endpoints.get(endpointKey);
+            if (superseded?.connector) {
+              yield* disconnectConnector(superseded, 4000, "Superseded by a newer connector");
             }
+            // Disconnecting the old connector may have pruned its table, so
+            // the new socket must attach to whatever table is live now.
+            const connectorEndpoint = endpointRuntime(endpointKey);
             yield* state.storage.put(keys.activeSession, connectingSession!);
             socket.serializeAttachment({
               role: "connector",
